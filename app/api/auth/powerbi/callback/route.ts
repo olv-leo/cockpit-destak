@@ -25,25 +25,24 @@ export async function GET(request: NextRequest) {
     const redirectUri = `${origin}/api/auth/powerbi/callback`;
     const tokens = await exchangeCode(code, redirectUri, verifier);
 
-    const { name, email }                 = parseIdToken(tokens.id_token ?? '');
+    const { name, email }                    = parseIdToken(tokens.id_token ?? '');
     const { ok: hasPermission, datasetName } = await checkDatasetAccess(tokens.access_token);
 
-    const payload = encodeURIComponent(JSON.stringify({
-      at: tokens.access_token,
-      rt: tokens.refresh_token,
-      exp: Date.now() + (tokens.expires_in - 60) * 1000,
+    // Store only identity + permission — tokens are large and not needed client-side
+    // (Power BI refresh uses service principal in GitHub Actions)
+    const session = JSON.stringify({
       name,
       email,
       hasPermission,
       datasetName: datasetName ?? null,
-    }));
+      loggedAt: Date.now(),
+    });
 
     const res = NextResponse.redirect(origin);
     res.cookies.delete('_pbi_cv');
-    // Non-httpOnly so the browser JS can read and move to localStorage
-    res.cookies.set('_pbi_pending', payload, {
-      httpOnly: false,
-      maxAge: 300,
+    res.cookies.set('_pbi_session', encodeURIComponent(session), {
+      httpOnly: false,      // JS-readable so Dashboard can pick it up
+      maxAge: 8 * 60 * 60, // 8 hours
       path: '/',
       sameSite: 'lax',
       secure: protocol === 'https:',
