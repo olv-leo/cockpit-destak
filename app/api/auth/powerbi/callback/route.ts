@@ -23,13 +23,16 @@ export async function GET(request: NextRequest) {
 
   try {
     const redirectUri = `${origin}/api/auth/powerbi/callback`;
+    console.log('[PBI callback] exchanging code, redirectUri=', redirectUri);
     const tokens = await exchangeCode(code, redirectUri, verifier);
+    console.log('[PBI callback] token exchange OK, id_token present=', !!tokens.id_token);
 
     const { name, email }                    = parseIdToken(tokens.id_token ?? '');
-    const { ok: hasPermission, datasetName } = await checkDatasetAccess(tokens.access_token);
+    console.log('[PBI callback] user:', name, email);
 
-    // Store only identity + permission — tokens are large and not needed client-side
-    // (Power BI refresh uses service principal in GitHub Actions)
+    const { ok: hasPermission, datasetName } = await checkDatasetAccess(tokens.access_token);
+    console.log('[PBI callback] dataset access:', hasPermission, datasetName);
+
     const session = JSON.stringify({
       name,
       email,
@@ -38,17 +41,14 @@ export async function GET(request: NextRequest) {
       loggedAt: Date.now(),
     });
 
-    const res = NextResponse.redirect(origin);
+    const encoded = Buffer.from(session).toString('base64url');
+    console.log('[PBI callback] redirecting with pbi_data param, size=', encoded.length);
+
+    const res = NextResponse.redirect(`${origin}/?pbi_data=${encoded}`);
     res.cookies.delete('_pbi_cv');
-    res.cookies.set('_pbi_session', encodeURIComponent(session), {
-      httpOnly: false,      // JS-readable so Dashboard can pick it up
-      maxAge: 8 * 60 * 60, // 8 hours
-      path: '/',
-      sameSite: 'lax',
-      secure: protocol === 'https:',
-    });
     return res;
   } catch (e) {
+    console.error('[PBI callback] error:', e);
     return fail(e instanceof Error ? e.message : 'Erro desconhecido');
   }
 }
