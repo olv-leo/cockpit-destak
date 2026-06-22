@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 
-const TENANT_ID = process.env.AZURE_TENANT_ID ?? '';
-const CLIENT_ID = process.env.AZURE_CLIENT_ID ?? '';
+const TENANT_ID     = process.env.AZURE_TENANT_ID     ?? '';
+const CLIENT_ID     = process.env.AZURE_CLIENT_ID     ?? '';
+const CLIENT_SECRET = process.env.AZURE_CLIENT_SECRET ?? '';
 
 export const PBI_WORKSPACE_ID = process.env.POWERBI_WORKSPACE_ID ?? '';
 export const PBI_DATASET_ID   = process.env.POWERBI_DATASET_ID   ?? '';
@@ -42,12 +43,13 @@ export async function exchangeCode(code: string, redirectUri: string, verifier: 
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      grant_type: 'authorization_code',
+      client_id:     CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type:    'authorization_code',
       code,
-      redirect_uri: redirectUri,
+      redirect_uri:  redirectUri,
       code_verifier: verifier,
-      scope: SCOPES,
+      scope:         SCOPES,
     }),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -59,10 +61,11 @@ export async function doRefresh(rt: string): Promise<RawTokens> {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      grant_type: 'refresh_token',
+      client_id:     CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      grant_type:    'refresh_token',
       refresh_token: rt,
-      scope: SCOPES,
+      scope:         SCOPES,
     }),
   });
   if (!r.ok) throw new Error('Falha ao renovar token do Power BI');
