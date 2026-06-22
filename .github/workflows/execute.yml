@@ -1,0 +1,34 @@
+name: Executar Validação Destak
+
+on:
+  workflow_dispatch:
+
+jobs:
+  execute:
+    name: Pipeline de Dados
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Executar pipeline
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SHEETS_ID_ORIGINAL: ${{ secrets.SHEETS_ID_ORIGINAL }}
+          SHEETS_ID_TRATADA: ${{ secrets.SHEETS_ID_TRATADA }}
+        run: python scripts/execute.py

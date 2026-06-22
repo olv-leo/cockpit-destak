@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+:root {
+  --green-dark: #1B4332;
+  --green-mid: #2D6A4F;
+  --green-light: #40916C;
+  --green-pale: #D8F3DC;
+  --cream: #F8F4ED;
+  --amber: #C49A00;
+  --amber-dark: #8B6914;
+  --text-dark: #1A2E23;
+}
+
+@theme inline {
+  --color-background: var(--cream);
+  --color-foreground: var(--text-dark);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--cream);
+  color: var(--text-dark);
+  font-family: var(--font-geist-sans, Arial, sans-serif);
+}
+
+/* Scrollbar estilizada para o terminal de logs */
+.log-terminal::-webkit-scrollbar {
+  width: 6px;
+}
+.log-terminal::-webkit-scrollbar-track {
+  background: #0d1f14;
+}
+.log-terminal::-webkit-scrollbar-thumb {
+  background: #2D6A4F;
+  border-radius: 3px;
+}
+
+/* Animação do botão executar */
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(64, 145, 108, 0.4); }
+  50% { box-shadow: 0 0 0 12px rgba(64, 145, 108, 0); }
+}
+.btn-execute-running {
+  animation: pulse-green 1.5s ease-in-out infinite;
+}
+
+/* Spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+/* Fade in cards */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in-up {
+  animation: fadeInUp 0.35s ease-out forwards;
+}
+
+/* Log blink cursor */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink::after {
+  content: '▮';
+  animation: blink 1s step-start infinite;
+  color: #40916C;
+  margin-left: 2px;
+}
