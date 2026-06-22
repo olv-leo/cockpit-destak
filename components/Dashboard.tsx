@@ -300,25 +300,28 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             {pbiConnected && pbiSession!.hasPermission && dsStatuses.length > 0 && (
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {dsStatuses.map((ds) => {
-                  const ok   = ds.lastRefresh?.status === 'Completed';
-                  const fail = ds.lastRefresh?.status === 'Failed';
-                  const running = ds.lastRefresh && !ok && !fail;
+                  const status  = ds.lastRefresh?.status;
+                  const ok      = status === 'Completed';
+                  const fail    = status === 'Failed';
+                  const running = status === 'Unknown';
                   return (
                     <div key={ds.id} className="flex items-center gap-3 px-3.5 py-3 rounded-xl border"
                       style={{ borderColor: '#F3F4F6', background: '#FAFAFA' }}>
                       <div className="flex-shrink-0">
-                        {ok   && <CheckCircle2 className="w-4 h-4" style={{ color: '#40916C' }} />}
-                        {fail && <AlertTriangle className="w-4 h-4" style={{ color: '#DC2626' }} />}
+                        {ok      && <CheckCircle2 className="w-4 h-4" style={{ color: '#40916C' }} />}
+                        {fail    && <AlertTriangle className="w-4 h-4" style={{ color: '#DC2626' }} />}
                         {running && <RefreshCw className="w-4 h-4 spinner" style={{ color: '#C49A00' }} />}
-                        {!ds.lastRefresh && <Clock className="w-4 h-4" style={{ color: '#D1D5DB' }} />}
+                        {!ok && !fail && !running && <Clock className="w-4 h-4" style={{ color: '#D1D5DB' }} />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate" style={{ color: '#1B4332' }}>{ds.name}</p>
                         <p className="text-xs" style={{ color: '#9CA3AF' }}>
-                          {ok   ? timeAgo(ds.lastRefresh!.endTime)
-                           : fail ? 'Falha no refresh'
+                          {ok      ? timeAgo(ds.lastRefresh!.endTime)
+                           : fail  ? 'Falha no refresh'
                            : running ? 'Atualizando...'
-                           : 'Nunca atualizado'}
+                           : status === 'Disabled' ? 'Refresh desabilitado'
+                           : ds.lastRefresh?.endTime ? timeAgo(ds.lastRefresh.endTime)
+                           : 'Sem histórico de refresh'}
                         </p>
                       </div>
                     </div>
