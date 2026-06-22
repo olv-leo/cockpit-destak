@@ -9,8 +9,11 @@ import re
 import json
 import os
 import sys
+import time
 import logging
 from datetime import datetime, timedelta
+
+import requests
 
 import numpy as np
 import pandas as pd
@@ -739,7 +742,74 @@ def main():
     salvar_sheets(spreadsheet_tratada, 'saidas_com_alocacoes', df_allocations)
     salvar_bd('saidas_com_alocacoes', df_allocations)
 
-    log.info(f"🎉 Pipeline concluído! Erros totais encontrados: {len(df_erros)}")
+    # 7. Atualizar Power BI
+    pbi_vars = ['AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
+                'POWERBI_WORKSPACE_ID', 'POWERBI_DATASET_ID']
+    if all(os.environ.get(v) for v in pbi_vars):
+        refresh_powerbi()
+    else:
+        log.warning("Variaveis Power BI nao configuradas, pulando atualizacao do dataset.")
+
+    log.info(f"Pipeline concluido! Erros totais encontrados: {len(df_erros)}")
+
+
+def refresh_powerbi() -> None:
+    """Atualiza o dataset do Power BI via service principal e aguarda conclusao."""
+    import msal
+
+    tenant_id     = os.environ['AZURE_TENANT_ID']
+    client_id     = os.environ['AZURE_CLIENT_ID']
+    client_secret = os.environ['AZURE_CLIENT_SECRET']
+    workspace_id  = os.environ['POWERBI_WORKSPACE_ID']
+    dataset_id    = os.environ['POWERBI_DATASET_ID']
+
+    log.info("Obtendo token do Power BI (service principal)...")
+    app = msal.ConfidentialClientApplication(
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        client_credential=client_secret,
+    )
+    result = app.acquire_token_for_client(
+        scopes=["https://analysis.windows.net/powerbi/api/.default"]
+    )
+    if "access_token" not in result:
+        raise RuntimeError(
+            f"Falha ao obter token Power BI: {result.get('error_description', result)}"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {result['access_token']}",
+        "Content-Type": "application/json",
+    }
+    base_url = (
+        f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}"
+    )
+
+    log.info("Disparando refresh do dataset Power BI...")
+    r = requests.post(f"{base_url}/refreshes", headers=headers,
+                      json={"notifyOption": "NoNotification"}, timeout=30)
+    if r.status_code != 202:
+        raise RuntimeError(
+            f"Falha ao iniciar refresh Power BI: HTTP {r.status_code} — {r.text}"
+        )
+
+    log.info("Aguardando conclusao do refresh Power BI (maximo 10 min)...")
+    for attempt in range(60):
+        time.sleep(10)
+        resp = requests.get(f"{base_url}/refreshes?$top=1", headers=headers, timeout=30)
+        resp.raise_for_status()
+        refreshes = resp.json().get("value", [])
+        if not refreshes:
+            continue
+        status = refreshes[0].get("status", "Unknown")
+        log.info(f"Status refresh Power BI: {status} (verificacao {attempt + 1}/60)")
+        if status == "Completed":
+            log.info("Refresh do Power BI concluido com sucesso!")
+            return
+        if status == "Failed":
+            raise RuntimeError(f"Refresh do Power BI falhou: {refreshes[0]}")
+
+    raise RuntimeError("Timeout: refresh Power BI nao concluiu em 10 minutos")
 
 
 if __name__ == '__main__':

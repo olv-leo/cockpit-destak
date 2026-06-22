@@ -5,9 +5,10 @@ import {
   Leaf, LogOut, Play, RefreshCw, Clock, CheckCircle2,
   AlertTriangle, Database, ExternalLink, History, Wifi, WifiOff,
   ChevronDown, ChevronUp, Rocket, Sheet, ShieldCheck, Save,
-  ServerCrash, Calculator, Flag, type LucideIcon,
+  ServerCrash, Calculator, Flag, BarChart2, LogIn, type LucideIcon,
 } from 'lucide-react';
 import { clearAuth, getExpiryInfo } from '@/lib/auth';
+import { loadPBISession, clearPBISession, isSessionValid, type PBISession } from '@/lib/pbi-client';
 import StatusCard from '@/components/StatusCard';
 import LogViewer, { type LogLine } from '@/components/LogViewer';
 import { cn } from '@/lib/cn';
@@ -25,32 +26,27 @@ interface DashboardProps {
   onLogout: () => void;
 }
 
-// Etapas do pipeline com tempo estimado acumulado (segundos desde início)
 const PIPELINE_STEPS: { label: string; Icon: LucideIcon; startSec: number; endSec: number }[] = [
-  { label: 'Iniciando ambiente',        Icon: Rocket,      startSec: 0,   endSec: 15  },
-  { label: 'Lendo Google Sheets',       Icon: Sheet,       startSec: 15,  endSec: 75  },
-  { label: 'Validando dados',           Icon: ShieldCheck, startSec: 75,  endSec: 150 },
-  { label: 'Salvando no Sheets',        Icon: Save,        startSec: 150, endSec: 300 },
+  { label: 'Iniciando ambiente',        Icon: Rocket,     startSec: 0,   endSec: 15  },
+  { label: 'Lendo Google Sheets',       Icon: Sheet,      startSec: 15,  endSec: 75  },
+  { label: 'Validando dados',           Icon: ShieldCheck, startSec: 75, endSec: 150 },
+  { label: 'Salvando no Sheets',        Icon: Save,       startSec: 150, endSec: 300 },
   { label: 'Salvando no PostgreSQL',    Icon: ServerCrash, startSec: 300, endSec: 420 },
-  { label: 'Calculando estoque (FIFO)', Icon: Calculator,  startSec: 420, endSec: 510 },
-  { label: 'Finalizando',              Icon: Flag,        startSec: 510, endSec: 540 },
+  { label: 'Calculando estoque (FIFO)', Icon: Calculator, startSec: 420, endSec: 510 },
+  { label: 'Atualizando Power BI',      Icon: BarChart2,  startSec: 510, endSec: 630 },
+  { label: 'Finalizando',               Icon: Flag,       startSec: 630, endSec: 660 },
 ];
 
-const TOTAL_SECONDS = 540; // ~9 min estimado
+const TOTAL_SECONDS = 660;
 
 function calcProgress(run: WorkflowRun | null): { pct: number; stepIdx: number } {
   if (!run || run.status === 'queued') return { pct: 0, stepIdx: -1 };
   if (run.status === 'completed') {
-    return {
-      pct: run.conclusion === 'success' ? 100 : 100,
-      stepIdx: run.conclusion === 'success' ? PIPELINE_STEPS.length - 1 : -1,
-    };
+    return { pct: 100, stepIdx: run.conclusion === 'success' ? PIPELINE_STEPS.length - 1 : -1 };
   }
   const elapsed = (Date.now() - new Date(run.created_at).getTime()) / 1000;
-  const pct = Math.min(95, (elapsed / TOTAL_SECONDS) * 100); // para em 95% até confirmar conclusão
-  const stepIdx = PIPELINE_STEPS.findIndex(
-    (s) => elapsed >= s.startSec && elapsed < s.endSec
-  );
+  const pct = Math.min(95, (elapsed / TOTAL_SECONDS) * 100);
+  const stepIdx = PIPELINE_STEPS.findIndex(s => elapsed >= s.startSec && elapsed < s.endSec);
   return { pct, stepIdx: stepIdx === -1 ? PIPELINE_STEPS.length - 2 : stepIdx };
 }
 
@@ -71,24 +67,19 @@ function timeAgo(iso: string) {
 function buildLogsFromRun(run: WorkflowRun | null): LogLine[] {
   if (!run) return [];
   const ts = () => new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-  if (run.status === 'queued') {
-    return [{ ts: ts(), msg: 'Workflow enfileirado no GitHub Actions...', level: 'info' }];
-  }
+  if (run.status === 'queued') return [{ ts: ts(), msg: 'Workflow enfileirado no GitHub Actions...', level: 'info' }];
   if (run.status === 'in_progress') {
     const elapsed = (Date.now() - new Date(run.created_at).getTime()) / 1000;
     const logs: LogLine[] = [{ ts: ts(), msg: 'Workflow iniciado no GitHub Actions', level: 'info' }];
-    PIPELINE_STEPS.forEach((s) => {
-      if (elapsed >= s.startSec) {
-        logs.push({ ts: ts(), msg: `${s.label}...`, level: 'info' });
-      }
+    PIPELINE_STEPS.forEach(s => {
+      if (elapsed >= s.startSec) logs.push({ ts: ts(), msg: `${s.label}...`, level: 'info' });
     });
     return logs;
   }
   if (run.status === 'completed' && run.conclusion === 'success') {
     return [
       { ts: ts(), msg: 'Pipeline concluido com sucesso', level: 'success' },
-      { ts: ts(), msg: 'Dados validados, Sheets e banco atualizados.', level: 'success' },
+      { ts: ts(), msg: 'Dados validados, Sheets, PostgreSQL e Power BI atualizados.', level: 'success' },
       { ts: ts(), msg: `Log completo: ${run.html_url}`, level: 'info' },
     ];
   }
@@ -102,14 +93,29 @@ function buildLogsFromRun(run: WorkflowRun | null): LogLine[] {
 }
 
 export default function Dashboard({ onLogout }: DashboardProps) {
-  const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [runs, setRuns]             = useState<WorkflowRun[]>([]);
   const [triggering, setTriggering] = useState(false);
-  const [logs, setLogs] = useState<LogLine[]>([]);
-  const [online, setOnline] = useState(true);
+  const [logs, setLogs]             = useState<LogLine[]>([]);
+  const [online, setOnline]         = useState(true);
   const [showHistory, setShowHistory] = useState(false);
-  const [progress, setProgress] = useState({ pct: 0, stepIdx: -1 });
+  const [progress, setProgress]     = useState({ pct: 0, stepIdx: -1 });
+  const [pbiSession, setPBISession] = useState<PBISession | null>(null);
+  const [pbiError, setPBIError]     = useState<string | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const expiry = getExpiryInfo();
+
+  // Load Power BI session + catch OAuth errors from URL
+  useEffect(() => {
+    const session = loadPBISession();
+    setPBISession(session && isSessionValid(session) ? session : null);
+
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get('pbi_error');
+    if (err) {
+      setPBIError(decodeURIComponent(err));
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   const latestRun = runs[0] ?? null;
   const isRunning = latestRun?.status === 'queued' || latestRun?.status === 'in_progress';
@@ -118,18 +124,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     try {
       const res = await fetch('/api/status');
       if (!res.ok) return;
-      const data: WorkflowRun[] = await res.json();
-      setRuns(data);
+      setRuns(await res.json());
       setOnline(true);
     } catch {
       setOnline(false);
     }
   }, []);
 
-  // Polling do status quando rodando
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+  useEffect(() => { fetchStatus(); }, [fetchStatus]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -137,10 +139,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     return () => clearInterval(id);
   }, [isRunning, fetchStatus]);
 
-  // Atualiza barra de progresso a cada segundo quando rodando
   useEffect(() => {
     if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-
     if (isRunning && latestRun) {
       const tick = () => setProgress(calcProgress(latestRun));
       tick();
@@ -148,22 +148,16 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     } else {
       setProgress(calcProgress(latestRun));
     }
-    return () => {
-      if (progressTimerRef.current) clearInterval(progressTimerRef.current);
-    };
+    return () => { if (progressTimerRef.current) clearInterval(progressTimerRef.current); };
   }, [isRunning, latestRun]);
 
-  // Atualiza logs
-  useEffect(() => {
-    setLogs(buildLogsFromRun(latestRun));
-  }, [latestRun, progress]); // progress como dep para re-gerar logs com elapsed correto
+  useEffect(() => { setLogs(buildLogsFromRun(latestRun)); }, [latestRun, progress]);
 
   async function handleExecute() {
     if (triggering || isRunning) return;
     setTriggering(true);
     setLogs([{ ts: new Date().toLocaleTimeString('pt-BR'), msg: 'Disparando workflow no GitHub Actions...', level: 'info' }]);
     setProgress({ pct: 0, stepIdx: -1 });
-
     try {
       const res = await fetch('/api/trigger', { method: 'POST' });
       if (res.ok) {
@@ -180,16 +174,16 @@ export default function Dashboard({ onLogout }: DashboardProps) {
     }
   }
 
-  function handleLogout() {
-    clearAuth();
-    onLogout();
-  }
+  function handleLogout() { clearAuth(); onLogout(); }
 
-  const lastSuccess = runs.find(r => r.status === 'completed' && r.conclusion === 'success');
-  const successRuns = runs.filter(r => r.conclusion === 'success').length;
+  function handlePBILogout() { clearPBISession(); setPBISession(null); setPBIError(null); }
 
-  const isSuccess = latestRun?.status === 'completed' && latestRun.conclusion === 'success';
-  const isFailure = latestRun?.status === 'completed' && latestRun.conclusion === 'failure';
+  const lastSuccess  = runs.find(r => r.status === 'completed' && r.conclusion === 'success');
+  const successRuns  = runs.filter(r => r.conclusion === 'success').length;
+  const isSuccess    = latestRun?.status === 'completed' && latestRun.conclusion === 'success';
+  const isFailure    = latestRun?.status === 'completed' && latestRun.conclusion === 'failure';
+  const canExecute   = !!pbiSession && pbiSession.hasPermission && !triggering && !isRunning;
+  const pbiConnected = !!pbiSession && isSessionValid(pbiSession);
 
   return (
     <div className="min-h-screen" style={{ background: '#F8F4ED' }}>
@@ -204,17 +198,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             </div>
             <div>
               <h1 className="text-white font-bold text-lg leading-none tracking-wide">COCKPIT DESTAK</h1>
-              <p className="text-xs leading-none mt-0.5" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                Gestão de Rebanho
-              </p>
+              <p className="text-xs leading-none mt-0.5" style={{ color: 'rgba(255,255,255,0.55)' }}>Gestão de Rebanho</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             {expiry && (
               <span className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full"
                 style={{ background: 'rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.65)' }}>
-                <Clock className="w-3 h-3" />
-                {expiry.daysLeft}d restantes
+                <Clock className="w-3 h-3" />{expiry.daysLeft}d restantes
               </span>
             )}
             {online
@@ -253,6 +244,85 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             variant="neutral" />
         </div>
 
+        {/* Power BI Connection Card */}
+        <div className="bg-white rounded-2xl shadow-sm border overflow-hidden" style={{ borderColor: '#E5E7EB' }}>
+          <div className="px-6 py-5">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: '#EFF6FF' }}>
+                  <BarChart2 className="w-4.5 h-4.5" style={{ color: '#0078D4' }} />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm" style={{ color: '#1B4332' }}>Power BI</p>
+                  {pbiConnected ? (
+                    pbiSession!.hasPermission ? (
+                      <p className="text-xs" style={{ color: '#40916C' }}>
+                        {pbiSession!.name}
+                        {pbiSession!.datasetName ? ` · ${pbiSession!.datasetName}` : ''}
+                      </p>
+                    ) : (
+                      <p className="text-xs" style={{ color: '#DC2626' }}>
+                        {pbiSession!.name} · sem permissão no dataset
+                      </p>
+                    )
+                  ) : (
+                    <p className="text-xs" style={{ color: '#9CA3AF' }}>
+                      Login necessário para executar
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {pbiConnected ? (
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full"
+                    style={pbiSession!.hasPermission
+                      ? { background: '#D8F3DC', color: '#1B4332' }
+                      : { background: '#FEE2E2', color: '#991B1B' }}>
+                    {pbiSession!.hasPermission
+                      ? <><CheckCircle2 className="w-3 h-3" />Acesso verificado</>
+                      : <><AlertTriangle className="w-3 h-3" />Sem acesso</>}
+                  </span>
+                  <button onClick={handlePBILogout}
+                    className="text-xs px-3 py-1.5 rounded-lg border transition-colors hover:bg-gray-50"
+                    style={{ color: '#6B7280', borderColor: '#E5E7EB' }}>
+                    Desconectar
+                  </button>
+                </div>
+              ) : (
+                <a href="/api/auth/powerbi"
+                  className="flex-shrink-0 flex items-center gap-2 text-sm px-4 py-2 rounded-xl font-semibold text-white transition-all hover:shadow-md active:scale-[0.97]"
+                  style={{ background: '#0078D4', boxShadow: '0 2px 8px rgba(0,120,212,0.2)' }}>
+                  <LogIn className="w-4 h-4" />
+                  Conectar
+                </a>
+              )}
+            </div>
+
+            {/* OAuth error */}
+            {pbiError && (
+              <div className="mt-3 flex items-start gap-2 text-xs px-3 py-2.5 rounded-lg"
+                style={{ background: '#FEF2F2', color: '#991B1B' }}>
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>Erro ao conectar: {pbiError}</span>
+              </div>
+            )}
+
+            {/* No permission warning */}
+            {pbiConnected && !pbiSession!.hasPermission && (
+              <div className="mt-3 flex items-start gap-2 text-xs px-3 py-2.5 rounded-lg"
+                style={{ background: '#FFFBEB', color: '#92400E' }}>
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>
+                  A conta <strong>{pbiSession!.email}</strong> não tem acesso ao dataset configurado.
+                  Verifique se a conta tem permissão de Contribuidor no workspace do Power BI.
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Painel principal de execução */}
         <div className="bg-white rounded-2xl shadow-sm border overflow-hidden" style={{ borderColor: '#B7E4C7' }}>
           <div className="p-6">
@@ -260,61 +330,64 @@ export default function Dashboard({ onLogout }: DashboardProps) {
               <div>
                 <h2 className="font-bold text-lg" style={{ color: '#1B4332' }}>Validação de Dados</h2>
                 <p className="text-sm mt-0.5" style={{ color: '#6B7280' }}>
-                  Valida as planilhas, detecta erros e atualiza Sheets + PostgreSQL + Power BI.
+                  Valida as planilhas, detecta erros e atualiza Sheets, PostgreSQL e Power BI.
                 </p>
               </div>
-              <button
-                onClick={handleExecute}
-                disabled={triggering || isRunning}
-                className={cn(
-                  "flex-shrink-0 flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-white text-sm transition-all duration-200",
-                  (triggering || isRunning)
-                    ? "opacity-80 cursor-not-allowed btn-execute-running"
-                    : "hover:shadow-lg active:scale-[0.97]"
+              <div className="flex-shrink-0 flex flex-col items-end gap-1">
+                <button
+                  onClick={handleExecute}
+                  disabled={!canExecute}
+                  title={!pbiConnected ? 'Conecte ao Power BI para executar' : !pbiSession!.hasPermission ? 'Conta sem permissão no dataset' : undefined}
+                  className={cn(
+                    "flex items-center gap-2 px-5 py-3 rounded-xl font-semibold text-white text-sm transition-all duration-200",
+                    !canExecute
+                      ? "opacity-60 cursor-not-allowed"
+                      : "hover:shadow-lg active:scale-[0.97]",
+                  )}
+                  style={{
+                    background: !canExecute
+                      ? 'linear-gradient(135deg, #2D6A4F 0%, #40916C 100%)'
+                      : 'linear-gradient(135deg, #1B4332 0%, #40916C 100%)',
+                    boxShadow: canExecute ? '0 4px 14px rgba(27,67,50,0.3)' : 'none',
+                  }}>
+                  {triggering || isRunning ? (
+                    <><svg className="spinner w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>{triggering ? 'Iniciando...' : 'Executando'}</>
+                  ) : (
+                    <><Play className="w-4 h-4" fill="currentColor" />Executar</>
+                  )}
+                </button>
+                {!pbiConnected && (
+                  <p className="text-xs" style={{ color: '#9CA3AF' }}>Requer login no Power BI</p>
                 )}
-                style={{
-                  background: (triggering || isRunning)
-                    ? 'linear-gradient(135deg, #2D6A4F 0%, #40916C 100%)'
-                    : 'linear-gradient(135deg, #1B4332 0%, #40916C 100%)',
-                  boxShadow: (triggering || isRunning) ? 'none' : '0 4px 14px rgba(27,67,50,0.3)',
-                }}>
-                {triggering || isRunning ? (
-                  <><svg className="spinner w-4 h-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>{triggering ? 'Iniciando...' : 'Executando'}</>
-                ) : (
-                  <><Play className="w-4 h-4" fill="currentColor" />Executar</>
-                )}
-              </button>
+              </div>
             </div>
 
-            {/* Barra de progresso — sempre visível quando há um run ativo ou recente */}
+            {/* Barra de progresso */}
             {(isRunning || isSuccess || isFailure || triggering) && (
               <div className="space-y-3">
-                {/* Percentual + label */}
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium" style={{ color: isFailure ? '#DC2626' : '#1B4332' }}>
                     {isFailure ? (
-                    <span className="flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Falha na execução</span>
-                  ) : isSuccess ? (
-                    <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" style={{ color: '#40916C' }} /> Concluído com sucesso</span>
-                  ) : progress.stepIdx >= 0 ? (
-                    <span className="flex items-center gap-1.5">
-                      {(() => { const S = PIPELINE_STEPS[progress.stepIdx]; return <S.Icon className="w-3.5 h-3.5" />; })()}
-                      {PIPELINE_STEPS[progress.stepIdx].label}...
-                    </span>
-                  ) : 'Iniciando...'}
+                      <span className="flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" />Falha na execução</span>
+                    ) : isSuccess ? (
+                      <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3.5 h-3.5" style={{ color: '#40916C' }} />Concluído com sucesso</span>
+                    ) : progress.stepIdx >= 0 ? (
+                      <span className="flex items-center gap-1.5">
+                        {(() => { const S = PIPELINE_STEPS[progress.stepIdx]; return <S.Icon className="w-3.5 h-3.5" />; })()}
+                        {PIPELINE_STEPS[progress.stepIdx].label}...
+                      </span>
+                    ) : 'Iniciando...'}
                   </span>
                   <span className="font-bold tabular-nums" style={{ color: isFailure ? '#DC2626' : '#40916C' }}>
                     {Math.round(progress.pct)}%
                   </span>
                 </div>
 
-                {/* Barra */}
                 <div className="relative h-3 rounded-full overflow-hidden" style={{ background: '#E5E7EB' }}>
-                  <div
-                    className="absolute inset-y-0 left-0 rounded-full transition-all duration-1000 ease-linear"
+                  <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-1000 ease-linear"
                     style={{
                       width: `${progress.pct}%`,
                       background: isFailure
@@ -323,9 +396,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                         ? 'linear-gradient(90deg, #1B4332, #40916C)'
                         : 'linear-gradient(90deg, #1B4332, #40916C, #74C69D)',
                       boxShadow: isRunning ? '0 0 8px rgba(64,145,108,0.5)' : 'none',
-                    }}
-                  />
-                  {/* Brilho animado enquanto roda */}
+                    }} />
                   {isRunning && (
                     <div className="absolute inset-y-0 rounded-full"
                       style={{
@@ -337,29 +408,21 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   )}
                 </div>
 
-                {/* Steps */}
                 <div className="flex gap-1 mt-1">
                   {PIPELINE_STEPS.map((step, i) => {
-                    const done = isSuccess || (!isFailure && i < progress.stepIdx);
+                    const done   = isSuccess || (!isFailure && i < progress.stepIdx);
                     const active = !isSuccess && !isFailure && i === progress.stepIdx;
-                    const failed = isFailure;
                     return (
-                      <div key={i} title={step.label}
-                        className="flex-1 h-1 rounded-full transition-all duration-500"
+                      <div key={i} title={step.label} className="flex-1 h-1 rounded-full transition-all duration-500"
                         style={{
-                          background: failed
+                          background: isFailure
                             ? (i <= Math.max(0, progress.stepIdx) ? '#FECACA' : '#F3F4F6')
-                            : done
-                            ? '#40916C'
-                            : active
-                            ? '#74C69D'
-                            : '#E5E7EB',
+                            : done ? '#40916C' : active ? '#74C69D' : '#E5E7EB',
                         }} />
                     );
                   })}
                 </div>
 
-                {/* Ícones das etapas em telas grandes */}
                 <div className="hidden md:grid" style={{ gridTemplateColumns: `repeat(${PIPELINE_STEPS.length}, 1fr)` }}>
                   {PIPELINE_STEPS.map((step, i) => {
                     const done   = isSuccess || (!isFailure && i < progress.stepIdx);
@@ -374,16 +437,14 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                   })}
                 </div>
 
-                {/* Tempo estimado */}
                 {isRunning && latestRun && (
                   <p className="text-xs text-right" style={{ color: '#9CA3AF' }}>
-                    Iniciado {timeAgo(latestRun.created_at)} · tempo médio ~9 min
+                    Iniciado {timeAgo(latestRun.created_at)} · tempo médio ~11 min
                   </p>
                 )}
               </div>
             )}
 
-            {/* Estado inicial (sem runs) */}
             {!isRunning && !isSuccess && !isFailure && !triggering && runs.length === 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {['Pesagens', 'Desmamas', 'IATFs', 'Vendas', 'Mortes', 'Compras', 'Transferências', 'Nascimentos', 'Estoque', 'Financeiro'].map(s => (
@@ -394,7 +455,6 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             )}
           </div>
 
-          {/* Link para o GitHub Actions */}
           {latestRun && (
             <a href={latestRun.html_url} target="_blank" rel="noopener noreferrer"
               className="flex items-center justify-between px-6 py-3 border-t text-xs transition-colors hover:bg-gray-50"
@@ -405,7 +465,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
           )}
         </div>
 
-        {/* Terminal de logs */}
+        {/* Logs */}
         <div>
           <h2 className="font-bold text-sm mb-2 flex items-center gap-2" style={{ color: '#1B4332' }}>
             Logs
@@ -435,8 +495,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             </span>
             <div className="flex items-center gap-2">
               <span role="button" tabIndex={0}
-                onClick={(e) => { e.stopPropagation(); fetchStatus(); }}
-                onKeyDown={(e) => e.key === 'Enter' && (e.stopPropagation(), fetchStatus())}
+                onClick={e => { e.stopPropagation(); fetchStatus(); }}
+                onKeyDown={e => e.key === 'Enter' && (e.stopPropagation(), fetchStatus())}
                 className="p-1.5 rounded-lg transition-colors hover:bg-gray-100 cursor-pointer" title="Atualizar">
                 <RefreshCw className="w-3.5 h-3.5" style={{ color: '#9CA3AF' }} />
               </span>
@@ -448,7 +508,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             <div className="border-t px-4 pb-4 pt-3 space-y-2" style={{ borderColor: '#F3F4F6' }}>
               {runs.length === 0 ? (
                 <p className="text-sm text-center py-6" style={{ color: '#9CA3AF' }}>Nenhuma execução registrada</p>
-              ) : runs.slice(0, 10).map((run) => (
+              ) : runs.slice(0, 10).map(run => (
                 <a key={run.id} href={run.html_url} target="_blank" rel="noopener noreferrer"
                   className="flex items-center gap-3 p-3 rounded-xl border transition-all hover:shadow-sm group"
                   style={{ borderColor: '#F3F4F6', background: '#FAFAFA' }}>
