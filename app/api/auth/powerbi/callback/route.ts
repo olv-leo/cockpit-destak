@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exchangeCode, parseIdToken, checkDatasetAccess } from '@/lib/pbi';
+import { exchangeCode, parseIdToken, checkDatasetsAccess } from '@/lib/pbi';
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin, protocol } = request.nextUrl;
@@ -27,17 +27,15 @@ export async function GET(request: NextRequest) {
     const tokens = await exchangeCode(code, redirectUri, verifier);
     console.log('[PBI callback] token exchange OK, id_token present=', !!tokens.id_token);
 
-    const { name, email }                    = parseIdToken(tokens.id_token ?? '');
-    console.log('[PBI callback] user:', name, email);
-
-    const { ok: hasPermission, datasetName } = await checkDatasetAccess(tokens.access_token);
-    console.log('[PBI callback] dataset access:', hasPermission, datasetName);
+    const { name, email }                 = parseIdToken(tokens.id_token ?? '');
+    const { ok: hasPermission, datasets } = await checkDatasetsAccess(tokens.access_token);
+    console.log('[PBI callback] user:', name, '| datasets:', datasets.length, '| permission:', hasPermission);
 
     const session = JSON.stringify({
       name,
       email,
       hasPermission,
-      datasetName: datasetName ?? null,
+      datasets,
       loggedAt: Date.now(),
     });
 

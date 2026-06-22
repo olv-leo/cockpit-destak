@@ -8,7 +8,7 @@ import {
   ServerCrash, Calculator, Flag, BarChart2, LogIn, type LucideIcon,
 } from 'lucide-react';
 import { clearAuth, getExpiryInfo } from '@/lib/auth';
-import { loadPBISession, clearPBISession, isSessionValid, type PBISession } from '@/lib/pbi-client';
+import { loadPBISession, clearPBISession, isSessionValid, type PBISession, type DatasetStatus } from '@/lib/pbi-client';
 import StatusCard from '@/components/StatusCard';
 import LogViewer, { type LogLine } from '@/components/LogViewer';
 import { cn } from '@/lib/cn';
@@ -99,15 +99,28 @@ export default function Dashboard({ onLogout }: DashboardProps) {
   const [online, setOnline]         = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [progress, setProgress]     = useState({ pct: 0, stepIdx: -1 });
-  const [pbiSession, setPBISession] = useState<PBISession | null>(null);
-  const [pbiError, setPBIError]     = useState<string | null>(null);
+  const [pbiSession, setPBISession]       = useState<PBISession | null>(null);
+  const [pbiError, setPBIError]           = useState<string | null>(null);
+  const [dsStatuses, setDsStatuses]       = useState<DatasetStatus[]>([]);
+  const [dsLoading, setDsLoading]         = useState(false);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const expiry = getExpiryInfo();
+
+  const fetchDatasets = useCallback(async () => {
+    setDsLoading(true);
+    try {
+      const r = await fetch('/api/powerbi/datasets');
+      if (r.ok) { const d = await r.json(); setDsStatuses(d.datasets); }
+    } catch { /* ignore */ }
+    setDsLoading(false);
+  }, []);
 
   // Load Power BI session + catch OAuth errors from URL
   useEffect(() => {
     const session = loadPBISession();
-    setPBISession(session && isSessionValid(session) ? session : null);
+    const valid = session && isSessionValid(session) ? session : null;
+    setPBISession(valid);
+    if (valid?.hasPermission) fetchDatasets();
 
     const params = new URLSearchParams(window.location.search);
     const err = params.get('pbi_error');
@@ -115,7 +128,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
       setPBIError(decodeURIComponent(err));
       window.history.replaceState({}, '', window.location.pathname);
     }
-  }, []);
+  }, [fetchDatasets]);
 
   const latestRun = runs[0] ?? null;
   const isRunning = latestRun?.status === 'queued' || latestRun?.status === 'in_progress';
@@ -223,7 +236,7 @@ export default function Dashboard({ onLogout }: DashboardProps) {
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-5">
         {/* Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <StatusCard icon={Clock} label="Última Execução"
             value={lastSuccess ? timeAgo(lastSuccess.created_at) : '—'}
             sub={lastSuccess ? formatDate(lastSuccess.created_at) : 'Nenhuma ainda'}
@@ -238,13 +251,9 @@ export default function Dashboard({ onLogout }: DashboardProps) {
             value={runs.length > 0 ? `${successRuns}/${runs.length}` : '—'}
             sub={runs.length > 0 ? `${successRuns} com sucesso` : 'Sem histórico'}
             variant="default" />
-          <StatusCard icon={Database} label="Fazendas"
-            value="6 ativas"
-            sub="Aurora, Destak e mais"
-            variant="neutral" />
         </div>
 
-        {/* Power BI Connection Card */}
+        {/* Power BI Connection + Datasets Card */}
         <div className="bg-white rounded-2xl shadow-sm border overflow-hidden" style={{ borderColor: '#E5E7EB' }}>
           <div className="px-6 py-5">
             <div className="flex items-center justify-between gap-4">
@@ -256,34 +265,21 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 <div>
                   <p className="font-semibold text-sm" style={{ color: '#1B4332' }}>Power BI</p>
                   {pbiConnected ? (
-                    pbiSession!.hasPermission ? (
-                      <p className="text-xs" style={{ color: '#40916C' }}>
-                        {pbiSession!.name}
-                        {pbiSession!.datasetName ? ` · ${pbiSession!.datasetName}` : ''}
-                      </p>
-                    ) : (
-                      <p className="text-xs" style={{ color: '#DC2626' }}>
-                        {pbiSession!.name} · sem permissão no dataset
-                      </p>
-                    )
-                  ) : (
-                    <p className="text-xs" style={{ color: '#9CA3AF' }}>
-                      Login necessário para executar
+                    <p className="text-xs" style={{ color: pbiSession!.hasPermission ? '#40916C' : '#DC2626' }}>
+                      {pbiSession!.name} · {pbiSession!.datasets.length} dataset{pbiSession!.datasets.length !== 1 ? 's' : ''}
                     </p>
+                  ) : (
+                    <p className="text-xs" style={{ color: '#9CA3AF' }}>Login necessário para executar</p>
                   )}
                 </div>
               </div>
 
               {pbiConnected ? (
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="hidden sm:flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full"
-                    style={pbiSession!.hasPermission
-                      ? { background: '#D8F3DC', color: '#1B4332' }
-                      : { background: '#FEE2E2', color: '#991B1B' }}>
-                    {pbiSession!.hasPermission
-                      ? <><CheckCircle2 className="w-3 h-3" />Acesso verificado</>
-                      : <><AlertTriangle className="w-3 h-3" />Sem acesso</>}
-                  </span>
+                  <button onClick={() => fetchDatasets()} title="Atualizar status"
+                    className="p-1.5 rounded-lg transition-colors hover:bg-gray-100">
+                    <RefreshCw className={cn("w-3.5 h-3.5", dsLoading && "spinner")} style={{ color: '#9CA3AF' }} />
+                  </button>
                   <button onClick={handlePBILogout}
                     className="text-xs px-3 py-1.5 rounded-lg border transition-colors hover:bg-gray-50"
                     style={{ color: '#6B7280', borderColor: '#E5E7EB' }}>
@@ -300,6 +296,45 @@ export default function Dashboard({ onLogout }: DashboardProps) {
               )}
             </div>
 
+            {/* Dataset status list */}
+            {pbiConnected && pbiSession!.hasPermission && dsStatuses.length > 0 && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {dsStatuses.map((ds) => {
+                  const ok   = ds.lastRefresh?.status === 'Completed';
+                  const fail = ds.lastRefresh?.status === 'Failed';
+                  const running = ds.lastRefresh && !ok && !fail;
+                  return (
+                    <div key={ds.id} className="flex items-center gap-3 px-3.5 py-3 rounded-xl border"
+                      style={{ borderColor: '#F3F4F6', background: '#FAFAFA' }}>
+                      <div className="flex-shrink-0">
+                        {ok   && <CheckCircle2 className="w-4 h-4" style={{ color: '#40916C' }} />}
+                        {fail && <AlertTriangle className="w-4 h-4" style={{ color: '#DC2626' }} />}
+                        {running && <RefreshCw className="w-4 h-4 spinner" style={{ color: '#C49A00' }} />}
+                        {!ds.lastRefresh && <Clock className="w-4 h-4" style={{ color: '#D1D5DB' }} />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate" style={{ color: '#1B4332' }}>{ds.name}</p>
+                        <p className="text-xs" style={{ color: '#9CA3AF' }}>
+                          {ok   ? timeAgo(ds.lastRefresh!.endTime)
+                           : fail ? 'Falha no refresh'
+                           : running ? 'Atualizando...'
+                           : 'Nunca atualizado'}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Loading */}
+            {pbiConnected && pbiSession!.hasPermission && dsStatuses.length === 0 && dsLoading && (
+              <div className="mt-4 flex items-center gap-2 text-xs" style={{ color: '#9CA3AF' }}>
+                <RefreshCw className="w-3.5 h-3.5 spinner" />
+                Carregando datasets...
+              </div>
+            )}
+
             {/* OAuth error */}
             {pbiError && (
               <div className="mt-3 flex items-start gap-2 text-xs px-3 py-2.5 rounded-lg"
@@ -315,8 +350,8 @@ export default function Dashboard({ onLogout }: DashboardProps) {
                 style={{ background: '#FFFBEB', color: '#92400E' }}>
                 <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                 <span>
-                  A conta <strong>{pbiSession!.email}</strong> não tem acesso ao dataset configurado.
-                  Verifique se a conta tem permissão de Contribuidor no workspace do Power BI.
+                  A conta <strong>{pbiSession!.email}</strong> não tem acesso aos datasets.
+                  Verifique se a conta tem permissão no workspace do Power BI.
                 </span>
               </div>
             )}

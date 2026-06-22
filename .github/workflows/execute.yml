@@ -35,5 +35,5 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           POWERBI_WORKSPACE_ID: ${{ secrets.POWERBI_WORKSPACE_ID }}
-          POWERBI_DATASET_ID: ${{ secrets.POWERBI_DATASET_ID }}
+          POWERBI_DATASET_IDS: ${{ secrets.POWERBI_DATASET_IDS }}
         run: python scripts/execute.py

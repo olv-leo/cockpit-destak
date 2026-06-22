@@ -744,7 +744,7 @@ def main():
 
     # 7. Atualizar Power BI
     pbi_vars = ['AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET',
-                'POWERBI_WORKSPACE_ID', 'POWERBI_DATASET_ID']
+                'POWERBI_WORKSPACE_ID', 'POWERBI_DATASET_IDS']
     if all(os.environ.get(v) for v in pbi_vars):
         refresh_powerbi()
     else:
@@ -754,16 +754,16 @@ def main():
 
 
 def refresh_powerbi() -> None:
-    """Atualiza o dataset do Power BI via service principal e aguarda conclusao."""
+    """Atualiza todos os datasets do Power BI via service principal e aguarda conclusao."""
     import msal
 
     tenant_id     = os.environ['AZURE_TENANT_ID']
     client_id     = os.environ['AZURE_CLIENT_ID']
     client_secret = os.environ['AZURE_CLIENT_SECRET']
     workspace_id  = os.environ['POWERBI_WORKSPACE_ID']
-    dataset_id    = os.environ['POWERBI_DATASET_ID']
+    dataset_ids   = [d.strip() for d in os.environ['POWERBI_DATASET_IDS'].split(',') if d.strip()]
 
-    log.info("Obtendo token do Power BI (service principal)...")
+    log.info(f"Obtendo token do Power BI (service principal) para {len(dataset_ids)} datasets...")
     app = msal.ConfidentialClientApplication(
         client_id,
         authority=f"https://login.microsoftonline.com/{tenant_id}",
@@ -781,35 +781,40 @@ def refresh_powerbi() -> None:
         "Authorization": f"Bearer {result['access_token']}",
         "Content-Type": "application/json",
     }
-    base_url = (
-        f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets/{dataset_id}"
-    )
+    base = f"https://api.powerbi.com/v1.0/myorg/groups/{workspace_id}/datasets"
 
-    log.info("Disparando refresh do dataset Power BI...")
-    r = requests.post(f"{base_url}/refreshes", headers=headers,
-                      json={"notifyOption": "NoNotification"}, timeout=30)
-    if r.status_code != 202:
-        raise RuntimeError(
-            f"Falha ao iniciar refresh Power BI: HTTP {r.status_code} — {r.text}"
-        )
+    # Dispara refresh de todos os datasets
+    for ds_id in dataset_ids:
+        log.info(f"Disparando refresh do dataset {ds_id[:8]}...")
+        r = requests.post(f"{base}/{ds_id}/refreshes", headers=headers,
+                          json={"notifyOption": "NoNotification"}, timeout=30)
+        if r.status_code != 202:
+            log.error(f"Falha ao iniciar refresh {ds_id[:8]}: HTTP {r.status_code} — {r.text}")
 
-    log.info("Aguardando conclusao do refresh Power BI (maximo 10 min)...")
+    # Aguarda todos concluirem (maximo 10 min)
+    pending = set(dataset_ids)
+    log.info(f"Aguardando conclusao de {len(pending)} datasets (maximo 10 min)...")
     for attempt in range(60):
         time.sleep(10)
-        resp = requests.get(f"{base_url}/refreshes?$top=1", headers=headers, timeout=30)
-        resp.raise_for_status()
-        refreshes = resp.json().get("value", [])
-        if not refreshes:
-            continue
-        status = refreshes[0].get("status", "Unknown")
-        log.info(f"Status refresh Power BI: {status} (verificacao {attempt + 1}/60)")
-        if status == "Completed":
-            log.info("Refresh do Power BI concluido com sucesso!")
+        for ds_id in list(pending):
+            resp = requests.get(f"{base}/{ds_id}/refreshes?$top=1", headers=headers, timeout=30)
+            resp.raise_for_status()
+            refreshes = resp.json().get("value", [])
+            if not refreshes:
+                continue
+            status = refreshes[0].get("status", "Unknown")
+            if status == "Completed":
+                log.info(f"Dataset {ds_id[:8]} atualizado com sucesso!")
+                pending.discard(ds_id)
+            elif status == "Failed":
+                log.error(f"Refresh do dataset {ds_id[:8]} falhou: {refreshes[0]}")
+                pending.discard(ds_id)
+        if not pending:
+            log.info(f"Todos os {len(dataset_ids)} datasets atualizados!")
             return
-        if status == "Failed":
-            raise RuntimeError(f"Refresh do Power BI falhou: {refreshes[0]}")
+        log.info(f"Aguardando {len(pending)} dataset(s)... (verificacao {attempt + 1}/60)")
 
-    raise RuntimeError("Timeout: refresh Power BI nao concluiu em 10 minutos")
+    raise RuntimeError(f"Timeout: {len(pending)} dataset(s) nao concluiram em 10 minutos")
 
 
 if __name__ == '__main__':

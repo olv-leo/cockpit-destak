@@ -4,8 +4,14 @@ export interface PBISession {
   name: string;
   email: string;
   hasPermission: boolean;
-  datasetName: string | null;
+  datasets: { id: string; name: string }[];
   loggedAt: number;
+}
+
+export interface DatasetStatus {
+  id: string;
+  name: string;
+  lastRefresh: { status: string; startTime: string; endTime: string } | null;
 }
 
 const KEY = 'destak_pbi_session';
