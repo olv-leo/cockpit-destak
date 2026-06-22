@@ -30,11 +30,13 @@ const levelPrefixes: Record<LogLine['level'], string> = {
 };
 
 export default function LogViewer({ logs, isRunning }: LogViewerProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [logs]);
 
   function copyLogs() {
@@ -69,7 +71,7 @@ export default function LogViewer({ logs, isRunning }: LogViewerProps) {
       </div>
 
       {/* Área de logs */}
-      <div className="log-terminal h-72 overflow-y-auto p-4 font-mono text-xs"
+      <div ref={containerRef} className="log-terminal h-72 overflow-y-auto p-4 font-mono text-xs"
         style={{ background: '#0a1a10' }}>
         {logs.length === 0 ? (
           <p style={{ color: '#2D6A4F' }} className="select-none">
@@ -96,7 +98,7 @@ export default function LogViewer({ logs, isRunning }: LogViewerProps) {
             )}
           </>
         )}
-        <div ref={bottomRef} />
+        <div />
       </div>
     </div>
   );
